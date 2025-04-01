@@ -1,0 +1,11 @@
+**__pycache__/
+*.png
+
+notebooks/temp*.ipynb
+inference/
+ckpts/
+wandb/
+
+configs/*
+!configs/config_template.yaml
+bash.sh

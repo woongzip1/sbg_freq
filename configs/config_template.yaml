@@ -1,0 +1,94 @@
+project_name: 'project1'
+run_name: "exp1"
+
+# DATALOADER
+dataloader:
+  batch_size: 16
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: True
+  pin_memory: True
+
+# DATASET
+dataset:
+  ratio: 1
+  common:
+    seg_len: 0.9
+    sr: 48000
+  train:
+    path_dir_nb: ["/home/woongzip/dataset_12/SBR_12_Core/VCTK"]
+    path_dir_wb: ["/home/woongzip/dataset_12/GT/VCTK"]
+  val:
+    # path_dir_nb: ["/home/woongzip/Dataset/DAPS_12_core"]
+    # path_dir_wb: ["/home/woongzip/Dataset/DAPS_gt_small"]
+    path_dir_nb: ["/home/woongzip/dataset_12/USAC44_12_core"]
+    path_dir_wb: ["/home/woongzip/dataset_12/USAC44_GT"]
+
+stft:
+  hop_size: 80
+  win_size: 320
+  n_fft: 1024
+
+# GENERATOR
+generator:
+  fine_tune: False
+  type: generator
+  hparams:
+    ConvNeXt_channels: 512
+    ConvNeXt_layers: 8
+    n_fft: 1024
+
+# DISCRIMINATOR
+discriminator: 
+  types: ['MultiBandSTFTDiscriminator', 'PeriodDiscriminator']
+  configs:
+    MultiBandSTFTDiscriminator:
+        C: 32
+        n_fft_list: [2048, 1024, 512]
+        hop_len_list: [512, 256, 128]
+        band_split_ratio: # 0.15 - 0.45 / 0.06
+            - [0.15, 0.21] # check only 4.5 kHz above
+            - [0.21, 0.27] # 0.1 -> 0.1875
+            - [0.27, 0.33]
+            - [0.33, 0.39]
+            - [0.39, 0.45]
+    PeriodDiscriminator:
+        period_list: [2,3,5,7,11]
+        C_period: 24
+
+loss:
+  ms_mel_loss_config:
+            n_fft_list: [32, 64, 128, 256, 512, 1024, 2048]
+            hop_ratio: 0.25
+            mel_bin_list: [5, 10, 20, 40, 80, 160, 320]
+            reduction: mean
+            loss_ratio: 1.0
+            sr: 48000
+            fmin: 0
+            core_cutoff: 4500
+  
+  lambda_mel_loss: 15
+  lambda_fm_loss: 6
+  lambda_adv_loss: 3
+
+optim:
+  learning_rate_ft: 0.0001
+  learning_rate: 1.0e-4
+  scheduler_gamma: 0.999996
+  B1: 0.5
+  B2: 0.9
+  
+use_tri_stage:
+  False
+  
+train:
+  val_step: 50000 # 200분 4만step
+  pretrain_step: 10000 # else False
+  ckpt_save_dir: "./ckpts/"
+  max_epochs: 500
+  ckpt: False
+  ckpt_path: "/home/woongzip/nn_template/ckpts/exp1/step_600.0k_lsdh_0.9080.pth"
+
+inference:
+  dir_speech: "./inference/apbwe"
+  dir_audio: "./inference/apbwe_audio"
