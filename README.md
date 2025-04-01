@@ -1,4 +1,3 @@
 ### README
-This directory contains simple project template for GAN training
-
+n-SBG framework using various modules
 

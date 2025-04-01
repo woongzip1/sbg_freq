@@ -1,5 +1,6 @@
 **__pycache__/
 *.png
+bash.sh
 
 notebooks/temp*.ipynb
 inference/
@@ -8,4 +9,3 @@ wandb/
 
 configs/*
 !configs/config_template.yaml
-bash.sh
