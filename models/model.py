@@ -65,7 +65,7 @@ class ConvNeXtBlock(nn.Module):
 
 
 class APNet_BWE_Model(torch.nn.Module):
-    def __init__(self, h):
+    def __init__(self, h, **kwargs):
         super(APNet_BWE_Model, self).__init__()
         self.h = h
         self.adanorm_num_embeddings = None

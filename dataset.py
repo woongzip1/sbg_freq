@@ -122,11 +122,6 @@ class Dataset(torch.utils.data.Dataset):
             wav_wb = self._multiple_pad(wav_wb)            
         else:
             sys.exit(f"unsupported mode! (train/val)")
-
-            # spec = self.get_spectrogram(wav_wb, power=2.0, log_scale=True) 
-            # spec = self.normalize_spec(spec)
-            # spec = self.extract_subband(spec, start=self.start_index, end=self.high_index) # start:5 : 3750Hz
-
         return wav_wb, wav_nb, get_filename(path_wav_wb)[0]
 
     @staticmethod
