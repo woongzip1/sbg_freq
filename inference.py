@@ -53,41 +53,47 @@ def _forward_pass(lr_waveform, hr_waveform, generator, config,):
 
 def inference(config, device='cuda', save_lr=False, exp_name=''):
     # save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
-    save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
-    # save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
-    os.makedirs(save_base_dir, exist_ok=True)
-
-    # dataloader
-    _, val_loader = prepare_dataloader(config)
-    # generator
-    model = prepare_generator(config, MODEL_MAP)
-    model = load_model_params(model, config['train']['ckpt_path'], device=device)
+    # save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
     
-    set_seed()
-    ## forward
-    model.eval()
-    bar = tqdm(val_loader)
-    duration_tot = 0
-    with torch.no_grad():
-        for batch in bar:
-            hr, lr, name = batch[0].to(device), batch[1].to(device), batch[2]
+    dirs_dict = config['inference']
+    for _, save_dir in dirs_dict.items():
+        print('***', os.path.basename(save_dir), '***')
+        save_base_dir = os.path.join(save_dir, exp_name)
+        os.makedirs(save_base_dir, exist_ok=True)
 
-            # forward
-            pred_start = time.time() # tick
-            audio_gen = _forward_pass(lr, hr, model, config)
-            # mag_nb, pha_nb, com_nb = amp_pha_stft(lr.squeeze(0), config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
-            # mag_g, pha_g, com_g = model(mag_nb, pha_nb)
-            # audio_gen = amp_pha_istft(mag_g, pha_g, config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
-            duration_tot += time.time() - pred_start # tock
-            
-            # save
-            output_file = os.path.join(save_base_dir, name[0]+'.wav')
-            sf.write(output_file, audio_gen.squeeze().cpu().numpy(), 48000, 'PCM_16')
+        # dataloader
+        _, val_loader = prepare_dataloader(config)
+        # generator
+        model = prepare_generator(config, MODEL_MAP)
+        model = load_model_params(model, config['train']['ckpt_path'], device=device)
+        
+        set_seed()
+        ## forward
+        model.eval()
+        bar = tqdm(val_loader)
+        duration_tot = 0
+        with torch.no_grad():
+            for batch in bar:
+                hr, lr, name = batch[0].to(device), batch[1].to(device), batch[2]
 
-            if save_lr:
-                lr_file = os.path.join(save_base_dir, 'lr', name[0]+'.wav')
-                os.makedirs(os.path.dirname(lr_file), exist_ok=True)
-                sf.write(lr_file, lr.squeeze().cpu().numpy(), 48000, 'PCM_16')
+                # forward
+                pred_start = time.time() # tick
+                audio_gen = _forward_pass(lr, hr, model, config)
+                # mag_nb, pha_nb, com_nb = amp_pha_stft(lr.squeeze(0), config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
+                # mag_g, pha_g, com_g = model(mag_nb, pha_nb)
+                # audio_gen = amp_pha_istft(mag_g, pha_g, config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
+                duration_tot += time.time() - pred_start # tock
+                
+                # save
+                output_file = os.path.join(save_base_dir, name[0]+'.wav')
+                sf.write(output_file, audio_gen.squeeze().cpu().numpy(), 48000, 'PCM_16')
+
+                if save_lr:
+                    lr_file = os.path.join(save_base_dir, 'lr', name[0]+'.wav')
+                    os.makedirs(os.path.dirname(lr_file), exist_ok=True)
+                    sf.write(lr_file, lr.squeeze().cpu().numpy(), 48000, 'PCM_16')
+            print(f'duration_tot!:{duration_tot}')
+        
 def main():
     print("Initializing Inference Process...")
     parser = argparse.ArgumentParser()
