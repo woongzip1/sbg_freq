@@ -1,5 +1,6 @@
+## ResNet + APBWE
 project_name: 'project1'
-run_name: "exp1"
+run_name: "exp3_apbwe_resnet_norvq"
 
 # DATALOADER
 dataloader:
@@ -16,28 +17,53 @@ dataset:
     seg_len: 0.9
     sr: 48000
   train:
-    path_dir_nb: ["/home/woongzip/dataset_12/SBR_12_Core/VCTK"]
-    path_dir_wb: ["/home/woongzip/dataset_12/GT/VCTK"]
+    path_dir_nb: ["/home/woongzip/dataset_12/SBR_12_Core/VCTK",
+                  "/home/woongzip/dataset_12/SBR_12_Core/FSD50K",
+                  "/home/woongzip/dataset_12/SBR_12_Core/MUSDB18",
+    ]
+    path_dir_wb: ["/home/woongzip/dataset_12/GT/VCTK",
+                  "/home/woongzip/dataset_12/GT/FSD50K",
+                  "/home/woongzip/dataset_12/GT/MUSDB18",
+    ]
   val:
-    # path_dir_nb: ["/home/woongzip/Dataset/DAPS_12_core"]
-    # path_dir_wb: ["/home/woongzip/Dataset/DAPS_gt_small"]
     path_dir_nb: ["/home/woongzip/dataset_12/USAC44_12_core"]
     path_dir_wb: ["/home/woongzip/dataset_12/USAC44_GT"]
+  val_speech:
+    path_dir_nb: ["/home/woongzip/Dataset/DAPS_12_core"]
+    path_dir_wb: ["/home/woongzip/Dataset/DAPS_gt_small"]
 
-stft:
-  hop_size: 80
-  win_size: 320
-  n_fft: 1024
 
 # GENERATOR
 generator:
   fine_tune: False
-  type: generator
-  hparams:
+  type: resnet_apbwe
+  
+  encoder_cfg:
+    conv_dim: 64
+    subband_num: 26 # F:320 -> 10 bands, 512 (12kHz) -> 16 bands  
+    stft:
+            hop_length: 512
+            win_length: 1024
+            n_fft: 2048
+            center: True
+
+  quantizer_cfg:
+    input_dim: 512 # subbandnum * 32 or same as convnext channels
+    n_codebooks: 4 # 13
+    codebook_size: 128 # 1024 
+    codebook_dim: 8
+    quantizer_dropout: 0.5
+
+  decoder_cfg:
     ConvNeXt_channels: 512
     ConvNeXt_layers: 8
     n_fft: 1024
-
+    stft:
+          hop_length: 512
+          win_length: 1024
+          n_fft: 1024
+          center: True
+  
 # DISCRIMINATOR
 discriminator: 
   types: ['MultiBandSTFTDiscriminator', 'PeriodDiscriminator']
@@ -70,6 +96,10 @@ loss:
   lambda_mel_loss: 15
   lambda_fm_loss: 6
   lambda_adv_loss: 3
+  
+  #
+  lambda_commit_loss: 1
+  lambda_codebook_loss: 1
 
 optim:
   learning_rate_ft: 0.0001
@@ -84,11 +114,11 @@ use_tri_stage:
 train:
   val_step: 50000 # 200분 4만step
   pretrain_step: 10000 # else False
-  ckpt_save_dir: "./ckpts/"
+  ckpt_save_dir: "./ckpts/apbwe_resnet"
   max_epochs: 500
   ckpt: False
-  ckpt_path: "/home/woongzip/nn_template/ckpts/exp1/step_600.0k_lsdh_0.9080.pth"
+  ckpt_path: "/home/woongzip/sbg_freq/ckpts/apbwe_resnet/norvq/step_600.0k_lsdh_0.4433.pth"
 
 inference:
-  dir_speech: "./inference/apbwe"
-  dir_audio: "./inference/apbwe_audio"
+  dir_audio: "./inference/apbwe_resnet_512hop_norvq_audio"
+  dir_speech: "./inference/apbwe_resnet_512hop_norvq_speech"

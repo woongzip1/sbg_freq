@@ -117,7 +117,7 @@ class Dataset(torch.utils.data.Dataset):
                 wav_nb = wav_nb[:, start_idx:start_idx + duration]
                 wav_wb = wav_wb[:, start_idx:start_idx + duration]
 
-        elif self.mode == "val": 
+        elif self.mode in ["val", "val_speech"]: 
             wav_nb = self._multiple_pad(wav_nb)
             wav_wb = self._multiple_pad(wav_wb)            
         else:

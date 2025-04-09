@@ -48,11 +48,18 @@ def prepare_dataloader(config):
         _, train_dataset = random_split(train_dataset, [len(train_dataset) - train_size, train_size])
 
     train_loader = DataLoader(train_dataset, shuffle=True, **config.dataloader)
+    
     val_loader_args = config.dataloader
     val_loader_args.batch_size = 1
     val_loader = DataLoader(val_dataset, shuffle=False, **val_loader_args)
 
-    return train_loader, val_loader
+    if hasattr(config.dataset, 'val_speech'):
+        val_speech_dataset = make_dataset(config, 'val_speech')
+        val_speech_loader = DataLoader(val_speech_dataset, shuffle=False, **val_loader_args)
+    else:
+        val_speech_loader = None
+
+    return train_loader, val_loader, val_speech_loader
 
 def main(if_log_step):
     args = parse_args()
@@ -67,7 +74,7 @@ def main(if_log_step):
         wandb.init(project=config['project_name'], entity='woongzip1', config=config, name=config['run_name'], notes=config['run_name'])
     
     # Prepare dataloader
-    train_loader, val_loader = prepare_dataloader(config)
+    train_loader, val_loader, _ = prepare_dataloader(config)
 
     # Model selection
     generator = prepare_generator(config, MODEL_MAP)

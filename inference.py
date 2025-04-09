@@ -56,13 +56,16 @@ def inference(config, device='cuda', save_lr=False, exp_name=''):
     # save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
     
     dirs_dict = config['inference']
-    for _, save_dir in dirs_dict.items():
+    for i, (_, save_dir) in enumerate(dirs_dict.items()):
         print('***', os.path.basename(save_dir), '***')
         save_base_dir = os.path.join(save_dir, exp_name)
         os.makedirs(save_base_dir, exist_ok=True)
 
         # dataloader
-        _, val_loader = prepare_dataloader(config)
+        dataloaders = prepare_dataloader(config) # train, val, val_speech
+        val_loader = dataloaders[i+1]
+        # pdb.set_trace()
+        
         # generator
         model = prepare_generator(config, MODEL_MAP)
         model = load_model_params(model, config['train']['ckpt_path'], device=device)
