@@ -39,20 +39,22 @@ def load_model_params(model, checkpoint_path, device='cuda'):
     print(f"Model loaded from {checkpoint_path}")
     return model
 
-def _forward_pass(lr_waveform, generator, config,):
+def _forward_pass(lr_waveform, hr_waveform, generator, config,):
     if config.generator.type == "seanet":
         audio_wb_g = generator(lr_waveform)
+    elif config.generator.type == 'resnet_apbwe':
+        audio_wb_g,_,_ = generator(lr_waveform, hr_waveform)
     else:
         mag_nb, pha_nb, _ = amp_pha_stft(lr_waveform.squeeze(1), config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
         mag_wb_g, pha_wb_g, com_wb_g = generator(mag_nb, pha_nb)
         audio_wb_g = amp_pha_istft(mag_wb_g, pha_wb_g, config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
-
     return audio_wb_g
 
 
 def inference(config, device='cuda', save_lr=False, exp_name=''):
     # save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
     save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
+    # save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
     os.makedirs(save_base_dir, exist_ok=True)
 
     # dataloader
@@ -72,7 +74,7 @@ def inference(config, device='cuda', save_lr=False, exp_name=''):
 
             # forward
             pred_start = time.time() # tick
-            audio_gen = _forward_pass(lr, model, config)
+            audio_gen = _forward_pass(lr, hr, model, config)
             # mag_nb, pha_nb, com_nb = amp_pha_stft(lr.squeeze(0), config.stft.n_fft, config.stft.hop_size, config.stft.win_size)
             # mag_g, pha_g, com_g = model(mag_nb, pha_nb)
             # audio_gen = amp_pha_istft(mag_g, pha_g, config.stft.n_fft, config.stft.hop_size, config.stft.win_size)

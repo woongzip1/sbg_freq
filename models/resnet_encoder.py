@@ -14,11 +14,11 @@ Adopts caual convolutions and weight normalizations
 """
 
 class ResnetEncoder(nn.Module):
-    def __init__(self, conv_dim=64, subband_num=10, visualize=False):
+    def __init__(self, conv_dim=64, subband_num=10, visualize=False, **kwargs):
         super().__init__()       
         self.resnet = ResNet18(conv_dim=conv_dim, visualize=visualize)  # outputs: [B, D, F/s, T]
-        self.projector = BandwiseLinear(subband_num=subband_num, dim_per_freqbins=conv_dim*8)  # expects [B, T, D*F/s]
-        
+        # self.projector = SimpleLinear(subband_num=subband_num, dim_per_freqbins=conv_dim*8)  # expects [B, T, D*F/s]
+        self.projector = BandProjection(in_channels=conv_dim*8, out_channels=32, subband_num=subband_num, out_freq_bins=512)
     def forward(self, x):
         """
         input:  [B,1,F,T]
@@ -26,11 +26,78 @@ class ResnetEncoder(nn.Module):
         """
         x = self.resnet(x)      # [B,1,F,T]->[B,D,F/32,T]
         ## rearrange
-        x = rearrange(x, 'b d f t -> b t (d f)') # [B,T,D*F/32]       
+        # x = rearrange(x, 'b d f t -> b t (d f)') # [B,T,D*F/32]       
         x = self.projector(x)   # [B,T,subband_num*32]
         x = rearrange(x, 'b t c -> b c t')        
         return x
-        
+
+class BandProjection(nn.Module):
+    """
+    1) 1x1 Conv로 채널을 줄임 (ex: 512 -> 16)
+    2) [out_channels * subband_num]을 flatten 후
+    3) Linear 로 513차원으로 projection
+    """
+    def __init__(self, in_channels=512, out_channels=16, subband_num=17, out_freq_bins=513):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.subband_num = subband_num  # F축 = subband 개수
+        self.out_freq_bins = out_freq_bins
+
+        # 1x1 Conv: 채널만 줄이기
+        self.conv_1x1 = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+        # Flatten 후 projection to 513
+        in_features = out_channels * subband_num
+        self.linear = nn.Linear(in_features, out_freq_bins)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, F, T]  (ex: [5, 512, 17, 200])
+        Returns:
+            out: [B, T, 513]
+        """
+        B, C, F, T = x.shape
+        assert C == self.in_channels, f"Expected {self.in_channels} channels, got {C}"
+        assert F == self.subband_num, f"Expected F={self.subband_num}, got {F}"
+
+        # Step 1: 1x1 Conv to reduce channels → [B, out_channels, F, T]
+        x = self.conv_1x1(x)
+
+        # Step 2: reshape to [B, T, out_channels * F]
+        x = x.permute(0, 3, 1, 2).contiguous()  # [B, T, out_channels, F]
+        x = x.view(B, T, self.out_channels * self.subband_num)  # [B, T, in_features]
+
+        # Step 3: Linear projection to 513
+        out = self.linear(x)  # [B, T, 513]
+
+        return out
+
+class SimpleLinear(nn.Module):
+    """Very Simple Linear Module: (subband_num * dim_per_freqbins) -> 513"""
+    def __init__(self, subband_num=10, dim_per_freqbins=512):
+        super().__init__()
+        self.subband_num = subband_num
+        self.dim_per_freqbins = dim_per_freqbins
+        self.in_dim = subband_num * dim_per_freqbins
+        self.out_dim = 513
+        self.linear = nn.Linear(self.in_dim, self.out_dim)  # naive: 전체 -> 513
+
+    def forward(self, embeddings):
+        """
+        Args:
+            embeddings: shape [B, T, subband_num * dim_per_freqbins]
+        Returns:
+            shape [B, T, 513]
+        """
+        B, T, D = embeddings.shape
+        assert D == self.in_dim, \
+            f"Expected input dim {self.in_dim}, but got {D}"
+
+        out = self.linear(embeddings)
+        return out
+
 class BandwiseLinear(nn.Module):
     def __init__(self, subband_num=10, dim_per_freqbins=512):
         super().__init__()

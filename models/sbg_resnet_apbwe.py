@@ -8,7 +8,6 @@ from torchinfo import summary
 from models.model import APNet_BWE_Model
 from models.resnet_encoder import ResnetEncoder
 from models.quantize import ResidualVectorQuantize
-from main import load_config
 
 class ResNet_APBWE(nn.Module):
     def __init__(self, config):
@@ -18,6 +17,7 @@ class ResNet_APBWE(nn.Module):
         self.quantizer = self._build_quantizer(self.h.quantizer_cfg)
         self.decoder = self._build_decoder(self.h.decoder_cfg)
         self.apply(self._init_weights) 
+        self.stride_factor = self.h.decoder_cfg.stft.n_fft
     
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv1d, nn.Linear)):
@@ -26,12 +26,11 @@ class ResNet_APBWE(nn.Module):
             nn.init.constant_(m.bias, 0)            
     
     def _compute_stft(self, waveform, n_fft=2048, center=True,
-                      win_length=2048, hop_length=2048, pad=True, **kwargs):
-        
+                      win_length=2048, hop_length=2048, pad=False, **kwargs):
         # pad len
-        if pad:
-            padlen = (n_fft - waveform.shape[-1] % n_fft) % n_fft
-            waveform = F.pad(waveform, (0, padlen))
+        # if pad:
+        #     padlen = (self.stride_factor - waveform.shape[-1] % self.stride_factor) % self.stride_factor
+        #     waveform = F.pad(waveform, (0, padlen))
         
         if waveform.dim() == 3: # [B,1,L] -> [B,L]
             waveform = waveform.squeeze(1)
@@ -87,7 +86,6 @@ class ResNet_APBWE(nn.Module):
         f_start = 1 + bins_per_band * (total_subbands - subband_num)
         f_end = F  # always end at Nyquist (full)
 
-        # pdb.set_trace()
         subbands = spec[:, f_start:f_end, :]
 
         # Include DC only when using all 32 subbands
@@ -110,9 +108,8 @@ class ResNet_APBWE(nn.Module):
         return ResidualVectorQuantize(**cfg)
     
     def extract_sideinfo(self, wb_input):
-        # stft method
-        log_amp, pha, com = self._compute_stft(wb_input)    # [B,1,L] -> [B,F,T]
-        # pdb.set_trace()
+        """ Encoding STFT parameters """
+        log_amp, pha, com = self._compute_stft(wb_input, **self.h.encoder_cfg.stft)    # [B,1,L] -> [B,F,T]
         log_amp = self._extract_high_subbands(log_amp, subband_num=self.h.encoder_cfg.subband_num)
         sideinfo = self.encoder(log_amp.unsqueeze(1))       # [B,1,F,T] -> [B,D,F/S,T]
         
@@ -131,7 +128,7 @@ class ResNet_APBWE(nn.Module):
         if self.decoder_type == 'freq': # frequency
             ## note: use Center=True for analysis and synthesis
             log_amp, pha, com = self._compute_stft(nb_input, pad=False, **self.h.decoder_cfg.stft)
-            log_amp, pha, com = self.decoder(log_amp, pha)
+            log_amp, pha, com = self.decoder(log_amp, pha, condition)
             # reconstruct waveform
             out = self._compute_istft(log_amp, pha, **self.h.decoder_cfg.stft)
         else:
@@ -141,15 +138,34 @@ class ResNet_APBWE(nn.Module):
     def inference(self, nb_input, quantized_condition, **kwargs):
         NotImplementedError("Inference method not implemened.")
         
+    def _pad_signal(self, waveform:torch.tensor, multiple_factor:int):
+        pad_len = (multiple_factor - waveform.shape[-1] % multiple_factor) % multiple_factor
+        if pad_len > 0:
+            waveform = F.pad(waveform, (0, pad_len))
+        return waveform, pad_len
+    
     def forward(self, nb_input, wb_input, **kwargs):
+        nb_input, pad_len = self._pad_signal(nb_input, multiple_factor=self.stride_factor)
+        wb_input, pad_len = self._pad_signal(wb_input, multiple_factor=self.stride_factor)
         sideinfo = self.extract_sideinfo(wb_input) # [B,1,T] -> [B,C,T]
-        parameters, code, latents, commit_loss, codebook_loss = self.quantize_sideinfo(sideinfo, **kwargs) # [B,C,T]
-        out = self.decode(nb_input, parameters, **kwargs) 
+        """
+        Feature Encoder
+        Quantize
+        BWE with Condition (TBD)
+        """
+        # sideinfo, code, latents, commit_loss, codebook_loss = self.quantize_sideinfo(sideinfo, **kwargs) # [B,C,T]
+        commit_loss = 0
+        codebook_loss = 0
+        
+        out = self.decode(nb_input, sideinfo, **kwargs)
+        ## reconstruct waveform length
+        out = out[...,:-pad_len].unsqueeze(1)
         return out, commit_loss, codebook_loss
     
 def main():
+    from main import load_config
     config = load_config("configs/config_resnet_apbwe.yaml")
-    config.generator.decoder_cfg.ConvNeXt_layers = 2
+    config.generator.decoder_cfg.ConvNeXt_layers = 8
     print(config.generator.encoder_cfg)
     print(config.generator.decoder_cfg)
 
@@ -162,8 +178,8 @@ def main():
     stft_input = torch.randn(5,1,32*encoder_cfg.subband_num,200)
     summary(model.encoder, input_data=[stft_input], 
             col_names=["input_size", "output_size", "num_params",], depth=3)   
-    summary(model.decoder, input_data=[input_m.squeeze(1),input_p.squeeze(1)], 
-            col_names=["input_size", "output_size", "num_params",], depth=3)   
+    # summary(model.decoder, input_data=[input_m.squeeze(1),input_p.squeeze(1)], 
+            # col_names=["input_size", "output_size", "num_params",], depth=3)   
     summary(model, input_data=[nb, wb], 
             col_names=["input_size", "output_size", "num_params",], depth=3)   
     

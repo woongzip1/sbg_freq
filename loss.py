@@ -12,6 +12,8 @@ class LossCalculator:
         self.lambda_adv_loss = config['loss']['lambda_adv_loss']
         self.lambda_fm_loss = config['loss']['lambda_fm_loss']
         self.lambda_mel_loss = config['loss']['lambda_mel_loss']
+        self.lambda_codebook_loss = config['loss']['lambda_codebook_loss']
+        self.lambda_commit_loss = config['loss']['lambda_commit_loss']
         self.ms_mel_loss_config = config['loss']['ms_mel_loss_config']
         
     def _save_figures(self, hr, x_hat_full):
@@ -33,7 +35,7 @@ class LossCalculator:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-    def compute_generator_loss(self, hr, x_hat_full): 
+    def compute_generator_loss(self, hr, x_hat_full, **kwargs): 
         hr = hr.squeeze(1)
         x_hat_full = x_hat_full.squeeze(1)
 
@@ -42,6 +44,10 @@ class LossCalculator:
         # adversarial & feature matching loss
         g_loss_dict, g_loss_report = self.discriminator.g_loss(hr, x_hat_full, adv_loss_type='hinge')
 
+        # commit & codebook loss
+        commit_loss = kwargs.get('commit_loss', 0)
+        codebook_loss = kwargs.get('codebook_loss', 0)
+        
         # mel loss
         if self.lambda_mel_loss:
             ms_mel_loss_value = ms_mel_loss(hr, x_hat_full, **self.ms_mel_loss_config)
@@ -52,7 +58,9 @@ class LossCalculator:
         loss_G = (
             self.lambda_adv_loss * g_loss_dict.get('adv_g', 0) +
             self.lambda_fm_loss * g_loss_dict.get('fm', 0) +
-            self.lambda_mel_loss * ms_mel_loss_value
+            self.lambda_mel_loss * ms_mel_loss_value +
+            self.lambda_codebook_loss * codebook_loss +
+            self.lambda_commit_loss * commit_loss
         )
 
         return loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report

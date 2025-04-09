@@ -7,5 +7,7 @@ inference/
 ckpts/
 wandb/
 
+_trainer*.py
+
 configs/*
 !configs/config_template.yaml

@@ -1,4 +1,5 @@
 import torch
+import pdb
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import wandb
@@ -30,8 +31,8 @@ class Trainer:
         self.if_log_to_wandb = if_log_to_wandb
         
         self.loss_calculator = LossCalculator(config, self.discriminator)
-        # self.lambda_commitment_loss = config['loss']['lambda_commitment_loss']
-        # self.lambda_codebook_loss = config['loss']['lambda_codebook_loss']
+        self.lambda_commit_loss = config['loss']['lambda_commit_loss']
+        self.lambda_codebook_loss = config['loss']['lambda_codebook_loss']
         self.lambda_mel_loss = config['loss']['lambda_mel_loss']
         self.lambda_fm_loss = config['loss']['lambda_fm_loss']
         self.lambda_adv_loss = config['loss']['lambda_adv_loss']
@@ -85,35 +86,25 @@ class Trainer:
             audio_wb_g = self.generator(lr_waveform)
             mag_wb_g = 0
             pha_wb_g = 0
+        elif self.config.generator.type == "resnet_apbwe":
+            audio_wb_g, commit_loss, codebook_loss = self.generator(lr_waveform, hr_waveform)
         else:
             mag_nb, pha_nb, _ = amp_pha_stft(lr_waveform.squeeze(1), self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
             mag_wb_g, pha_wb_g, com_wb_g = self.generator(mag_nb, pha_nb)
             audio_wb_g = amp_pha_istft(mag_wb_g, pha_wb_g, self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
 
-        return audio_wb_g, mag_wb_g, pha_wb_g
+        return audio_wb_g, commit_loss, codebook_loss
 
 
     def train_step(self, hr, lr, step, pretrain_step=0):
         self.generator.train()
         self.discriminator.train()
-               
-        # lr, hr shape: [B, 1, T] → squeeze
-        # lr = lr.squeeze(1)  # [B, T]
-        # hr = hr.squeeze(1)
 
         # forward
-        audio_wb_g, mag_wb_g, pha_wb_g = self._forward_pass(lr, hr_waveform=hr)
+        audio_wb_g, commit_loss, codebook_loss = self._forward_pass(lr, hr_waveform=hr)
 
-        # GT STFT
-        mag_wb, pha_wb, _ = amp_pha_stft(hr.squeeze(1), self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
-
-        # ISTFT (optional)
-        audio_wb_reconstructed = amp_pha_istft(mag_wb, pha_wb, self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
-
-        import pdb
-        # pdb.set_trace()
         # Generator Loss 
-        loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g)
+        loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, commit_loss=commit_loss, codebook_loss=codebook_loss)
         
         #### for gradient exploding ####
         if ms_mel_loss_value > 100:
@@ -160,31 +151,19 @@ class Trainer:
         self.discriminator.eval()
 
         result = {
-            key: 0 for key in ['adv_g', 'fm', 'loss_D', 'ms_mel_loss', 'LSD_L', 'LSD_H']
+            key: 0 for key in ['adv_g', 'fm', 'loss_D', 'ms_mel_loss', 'codebook_loss', 'LSD_L', 'LSD_H']
         }
 
         with torch.no_grad():
             for i, (hr, lr, _) in enumerate(tqdm(self.val_loader, desc='Validation')):
                 lr, hr = lr.to(self.device), hr.to(self.device)
                 
-                # lr = lr.squeeze(1)  # [B, T]
-                # hr = hr.squeeze(1)  # [B, T]
-
-                # STFT 변환 (NB 입력)
-                mag_nb, pha_nb, _ = amp_pha_stft(lr.squeeze(1), self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
-
-                # Generator forward
-                audio_wb_g, mag_wb_g, pha_wb_g = self._forward_pass(lr, hr)
-                
-                # x_hat_full = amp_pha_istft(mag_wb_g, pha_wb_g, self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
-
-                # GT STFT
-                mag_wb, pha_wb, _ = amp_pha_stft(hr.squeeze(1), self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
+                audio_wb_g, commit_loss, codebook_loss = self._forward_pass(lr, hr_waveform=hr)
 
                 # Generator Loss (adv + fm + mel)
                 loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(
-                    hr=hr,
-                    x_hat_full=audio_wb_g,
+                    hr=hr, x_hat_full=audio_wb_g,
+                    codebook_loss = codebook_loss, commit_loss = commit_loss,
                 )
 
                 # Discriminator Loss
@@ -199,25 +178,26 @@ class Trainer:
                 result['LSD_H'] += batch_lsd_h
                 result['adv_g'] += g_loss_dict.get('adv_g', 0).item()
                 result['fm'] += g_loss_dict.get('fm', 0).item()
+                result['codebook_loss'] += codebook_loss.item() if codebook_loss else 0
                 result['ms_mel_loss'] += ms_mel_loss_value.item() if ms_mel_loss_value else 0
                 result['loss_D'] += loss_D.item()
 
                 # Logging
                 if i == 5:
-                    draw_spec(hr.squeeze().cpu().numpy(), win_len=2048, sr=48000, use_colorbar=False, hop_len=1024, save_fig=True, save_path='gt',return_fig=False)
-                    draw_spec(lr.squeeze().cpu().numpy(), win_len=2048, sr=48000, use_colorbar=False, hop_len=1024, save_fig=True, save_path='lr',return_fig=False)
-                    draw_spec(audio_wb_g.squeeze().cpu().numpy(), win_len=2048, sr=48000, use_colorbar=False, hop_len=1024, save_fig=True, save_path='recon',return_fig=False)              
+                    draw_spec(hr.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='gt',return_fig=False)
+                    draw_spec(lr.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='lr',return_fig=False)
+                    draw_spec(audio_wb_g.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='recon',return_fig=False)              
                 
                 if i in [0, 5, 33]:
                     if not self.hr_logged:
                         self.unified_log({
                             f'audio_hr_{i}': hr.squeeze().cpu().numpy(),
-                            f'spec_hr_{i}': draw_spec(hr.squeeze().cpu().numpy(), win_len=2048, sr=48000, use_colorbar=False, hop_len=1024, return_fig=True),
+                            f'spec_hr_{i}': draw_spec(hr.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, return_fig=True),
                         }, 'val', step=step)
 
                     self.unified_log({
                         f'audio_bwe_{i}': audio_wb_g.squeeze().cpu().numpy(),
-                        f'spec_bwe_{i}': draw_spec(audio_wb_g.squeeze().cpu().numpy(), win_len=2048, sr=48000, use_colorbar=False, hop_len=1024, return_fig=True),
+                        f'spec_bwe_{i}': draw_spec(audio_wb_g.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, return_fig=True),
                     }, 'val', step=step)
 
             self.hr_logged = True

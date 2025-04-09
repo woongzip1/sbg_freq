@@ -110,7 +110,7 @@ class APNet_BWE_Model(torch.nn.Module):
             nn.init.trunc_normal_(m.weight, std=0.02)
             nn.init.constant_(m.bias, 0)
 
-    def forward(self, mag_nb, pha_nb):
+    def forward(self, mag_nb, pha_nb, cond_mag):
 
         x_mag = self.conv_pre_mag(mag_nb)
         x_pha = self.conv_pre_pha(pha_nb)
@@ -118,10 +118,10 @@ class APNet_BWE_Model(torch.nn.Module):
         x_pha = self.norm_pre_pha(x_pha.transpose(1, 2)).transpose(1, 2)
 
         for conv_block_mag, conv_block_pha in zip(self.convnext_mag, self.convnext_pha):
-            x_mag = x_mag + x_pha
+            x_mag = x_mag + x_pha + cond_mag
             x_pha = x_pha + x_mag
             x_mag = conv_block_mag(x_mag, cond_embedding_id=None)
-            x_pha = conv_block_pha(x_pha, cond_embedding_id=None)
+            x_pha = conv_block_pha(x_pha, cond_embedding_id=None) 
 
         x_mag = self.norm_post_mag(x_mag.transpose(1, 2))
         mag_wb = mag_nb + self.linear_post_mag(x_mag).transpose(1, 2)

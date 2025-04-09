@@ -6,6 +6,7 @@ from box import Box
 from models.model import APNet_BWE_Model
 from models.seanet import SEANet
 from models.discriminators import MultiBandSTFTDiscriminator, SSDiscriminatorBlock
+from models.sbg_resnet_apbwe import ResNet_APBWE
 
 import sys
 sys.path.append("..")
@@ -14,7 +15,9 @@ from utils import count_model_params
 MODEL_MAP = {
     'generator': APNet_BWE_Model,
     'seanet': SEANet,
+    'resnet_apbwe': ResNet_APBWE,
     }
+
 DISCRIMINATOR_KWARG_MAP = {
         "MultiBandSTFTDiscriminator": lambda cfg: {
             "sd_num": len(cfg.n_fft_list),
@@ -65,14 +68,19 @@ def prepare_generator(config:Box, MODEL_MAP):
     if gen_type not in MODEL_MAP:
         raise ValueError(f"Unsupported generator type: {gen_type}")
     
-    GenClass = MODEL_MAP[gen_type]
-    sig = inspect.signature(GenClass.__init__)
-    if "h" in sig.parameters:
-        hparams = config.generator.hparams
-        generator = GenClass(hparams)
-    else:        
-        hparams = config.generator.hparams
-        generator = GenClass(**hparams)
+    if gen_type == "resnet_apbwe":
+        GenClass = MODEL_MAP[gen_type]
+        generator = GenClass(config)
+        hparams = generator.h
+    else:    
+        GenClass = MODEL_MAP[gen_type]
+        sig = inspect.signature(GenClass.__init__)
+        if "h" in sig.parameters:
+            hparams = config.generator.hparams
+            generator = GenClass(hparams)
+        else:        
+            hparams = config.generator.hparams
+            generator = GenClass(**hparams)
 
     # Logging
     print("########################################")
@@ -87,11 +95,15 @@ def prepare_generator(config:Box, MODEL_MAP):
 
     # Dummy forward
     lr = torch.randn(1,1,48000)
+    hr = torch.randn(1,1,48000)
     mag_nb = torch.randn(1,513,400)
     pha_nb = torch.randn(1,513,400)
     try:
         if gen_type == "seanet":
             summary(generator, input_data=[lr], depth=2,
+                col_names=["input_size", "output_size", "num_params",])
+        elif gen_type == 'resnet_apbwe':
+            summary(generator, input_data=[lr,hr], depth=2,
                 col_names=["input_size", "output_size", "num_params",])
         else:
             summary(generator, input_data=[mag_nb, pha_nb], depth=2,
@@ -108,7 +120,7 @@ def main():
     from utils import print_config
     from main import load_config
     
-    config_path = "configs/config_template.yaml" # 8, 21
+    config_path = "configs/config_resnet_apbwe.yaml" # 8, 21
     config = load_config(config_path)
     disc = prepare_discriminator(config)
     gen = prepare_generator(config, MODEL_MAP)
