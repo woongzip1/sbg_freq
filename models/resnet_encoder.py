@@ -14,11 +14,11 @@ Adopts caual convolutions and weight normalizations
 """
 
 class ResnetEncoder(nn.Module):
-    def __init__(self, conv_dim=64, subband_num=10, visualize=False, **kwargs):
+    def __init__(self, input_ch=1, conv_dim=64, subband_num=10, visualize=False, output_dim=512, **kwargs):
         super().__init__()       
-        self.resnet = ResNet18(conv_dim=conv_dim, visualize=visualize)  # outputs: [B, D, F/s, T]
+        self.resnet = ResNet18(input_ch=input_ch, conv_dim=conv_dim, visualize=visualize)  # outputs: [B, D, F/s, T]
         # self.projector = SimpleLinear(subband_num=subband_num, dim_per_freqbins=conv_dim*8)  # expects [B, T, D*F/s]
-        self.projector = BandProjection(in_channels=conv_dim*8, out_channels=32, subband_num=subband_num, out_freq_bins=512)
+        self.projector = BandProjection(in_channels=conv_dim*8, out_channels=32, subband_num=subband_num, out_freq_bins=output_dim)
     def forward(self, x):
         """
         input:  [B,1,F,T]
@@ -36,7 +36,10 @@ class BandProjection(nn.Module):
     1) 1x1 Conv로 채널을 줄임 (ex: 512 -> 16)
     2) [out_channels * subband_num]을 flatten 후
     3) Linear 로 513차원으로 projection
+    
+    ## out_channels 16으로 해도 되겠는데 NFFT 2048이면, subband 32면..?
     """
+    
     def __init__(self, in_channels=512, out_channels=16, subband_num=17, out_freq_bins=513):
         super().__init__()
         self.in_channels = in_channels
@@ -118,16 +121,16 @@ class BandwiseLinear(nn.Module):
 
         return final_output
 
-def ResNet18(conv_dim=64, visualize=False):
-    return ResNet(BasicBlock, [2, 2, 2, 2], conv_dim, visualize=visualize)
+def ResNet18(conv_dim=64, input_ch=1, visualize=False):
+    return ResNet(BasicBlock, [2, 2, 2, 2], input_ch, conv_dim, visualize=visualize)
 
 class ResNet(nn.Module):
-    def __init__(self, block, layers, conv_dim=64, visualize=False):
+    def __init__(self, block, layers, input_ch=1, conv_dim=64, visualize=False):
         super(ResNet, self).__init__()
         self.conv_dim = conv_dim
         self.first_conv_dim = conv_dim
         
-        self.conv1 = weight_norm(CausalConv2d(1, self.first_conv_dim, kernel_size=(7,7), stride=(2,1), bias=False))
+        self.conv1 = weight_norm(CausalConv2d(input_ch, self.first_conv_dim, kernel_size=(7,7), stride=(2,1), bias=False))
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=(2,1), padding=1)
 

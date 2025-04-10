@@ -54,17 +54,16 @@ def _forward_pass(lr_waveform, hr_waveform, generator, config,):
 def inference(config, device='cuda', save_lr=False, exp_name=''):
     # save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
     # save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
-    
+    # dataloader
+    dataloaders = prepare_dataloader(config) # train, val, val_speech
     dirs_dict = config['inference']
     for i, (_, save_dir) in enumerate(dirs_dict.items()):
         print('***', os.path.basename(save_dir), '***')
         save_base_dir = os.path.join(save_dir, exp_name)
         os.makedirs(save_base_dir, exist_ok=True)
-
-        # dataloader
-        dataloaders = prepare_dataloader(config) # train, val, val_speech
+        
+        # Dataloader
         val_loader = dataloaders[i+1]
-        # pdb.set_trace()
         
         # generator
         model = prepare_generator(config, MODEL_MAP)

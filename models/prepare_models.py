@@ -103,7 +103,7 @@ def prepare_generator(config:Box, MODEL_MAP):
             summary(generator, input_data=[lr], depth=2,
                 col_names=["input_size", "output_size", "num_params",])
         elif gen_type == 'resnet_apbwe':
-            summary(generator, input_data=[lr,hr], depth=2,
+            summary(generator, input_data=[lr,hr], depth=1,
                 col_names=["input_size", "output_size", "num_params",])
         else:
             summary(generator, input_data=[mag_nb, pha_nb], depth=2,

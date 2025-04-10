@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from torchinfo import summary
 
+import models
 from models.model import APNet_BWE_Model
 from models.resnet_encoder import ResnetEncoder
 from models.quantize import ResidualVectorQuantize
@@ -61,6 +62,7 @@ class ResNet_APBWE(nn.Module):
 
     def _compute_istft(self, log_amp, pha, n_fft, hop_length, win_length, center=True):
         amp = torch.exp(log_amp)
+        amp = torch.clip(amp, max=1e2) # added
         com = torch.complex(amp*torch.cos(pha), amp*torch.sin(pha))
         hann_window = torch.hann_window(win_length).to(com.device)
         audio = torch.istft(com, n_fft, hop_length=hop_length, win_length=win_length, window=hann_window, center=center)
@@ -78,6 +80,7 @@ class ResNet_APBWE(nn.Module):
             Tensor: Extracted subbands of shape [C, new_F, T]
         """
         C, F, T = spec.shape
+        # pdb.set_trace()
         total_subbands = 32
         bins_per_band = F // total_subbands  # e.g. 1024 // 32 = 32
         assert 1 <= subband_num <= total_subbands, "subband_num must be between 1 and 32"
@@ -89,9 +92,9 @@ class ResNet_APBWE(nn.Module):
         subbands = spec[:, f_start:f_end, :]
 
         # Include DC only when using all 32 subbands
-        if subband_num == 32:
-            dc = spec[:, 0:1, :]
-            subbands = torch.cat([dc, subbands], dim=1)
+        # if subband_num == 32:
+            # dc = spec[:, 0:1, :]
+            # subbands = torch.cat([dc, subbands], dim=1)
 
         return subbands  # [C, new_F, T]
     
@@ -102,7 +105,13 @@ class ResNet_APBWE(nn.Module):
         return encoder
     
     def _build_decoder(self, cfg):
-        return APNet_BWE_Model(cfg)
+        model_class = getattr(models, cfg['type'])
+        args = cfg.copy()
+        del args['type']
+        # model = model_class(**args)
+        model = model_class(args)
+        # return APNet_BWE_Model(cfg)
+        return model
     
     def _build_quantizer(self, cfg):
         return ResidualVectorQuantize(**cfg)
@@ -111,7 +120,10 @@ class ResNet_APBWE(nn.Module):
         """ Encoding STFT parameters """
         log_amp, pha, com = self._compute_stft(wb_input, **self.h.encoder_cfg.stft)    # [B,1,L] -> [B,F,T]
         log_amp = self._extract_high_subbands(log_amp, subband_num=self.h.encoder_cfg.subband_num)
-        sideinfo = self.encoder(log_amp.unsqueeze(1))       # [B,1,F,T] -> [B,D,F/S,T]
+        log_amp, pha = log_amp.unsqueeze(1), pha[:,1:,:].unsqueeze(1)
+        if self.h.encoder_cfg.get('input_ch', 0) == 2:
+            log_amp = torch.cat([log_amp, pha], dim=1)
+        sideinfo = self.encoder(log_amp)       # [B,1,F,T] -> [B,D,F/S,T] -> [B,512,T]
         
         # must return [B,C,T]
         return sideinfo
@@ -165,6 +177,7 @@ class ResNet_APBWE(nn.Module):
 def main():
     from main import load_config
     config = load_config("configs/config_resnet_apbwe.yaml")
+    config = load_config("/home/woongzip/sbg_freq/configs/config_resnet_vocos_norvq_core_phase.yaml")
     config.generator.decoder_cfg.ConvNeXt_layers = 8
     print(config.generator.encoder_cfg)
     print(config.generator.decoder_cfg)
