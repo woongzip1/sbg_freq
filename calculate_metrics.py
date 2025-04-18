@@ -53,46 +53,62 @@ def cal_pesq(pred, target, sr=16000, mode='wb'):
 
     return sum(scores) / len(scores)
 
+def cal_apd(pred, target):
+    phase_g = stft(pred, n_fft=1536, hop_length=768)[1]
+    phase_r = stft(target, n_fft=1536, hop_length=768)[1]
+
+    print('specshape:', phase_r.shape)
+    # apd_ip = anti_wrapping_function(phase_r - phase_g).square().mean(dim=1).sqrt().mean()
+    # apd_gd = anti_wrapping_function(torch.diff(phase_r, dim=1) - torch.diff(phase_g, dim=1)).square().mean(dim=1).sqrt().mean()
+    # apd_iaf = anti_wrapping_function(torch.diff(phase_r, dim=2) - torch.diff(phase_g, dim=2)).square().mean(dim=1).sqrt().mean()
+
+    apd_ip = torch.mean(anti_wrapping_function(phase_r - phase_g))
+    apd_gd = torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=1) - torch.diff(phase_g, dim=1)))
+    apd_iaf = torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=2) - torch.diff(phase_g, dim=2)))
+    
+    return apd_ip, apd_gd, apd_iaf
+
 
 def anti_wrapping_function(x):
-    return x - torch.round(x / (2 * np.pi)) * 2 * np.pi
+    return torch.abs(x - torch.round(x / (2 * np.pi)) * 2 * np.pi)
 
-def cal_apd(pred, target):
-    pha_pred = stft(pred)[1]
-    pha_target = stft(target)[1]
-    dim_freq = 1025
-    dim_time = pha_pred.size(-1)
+# def cal_apd(pred, target):
+#     pha_pred = stft(pred, n_fft=1536, hop_length=768)[1]
+#     pha_target = stft(target, n_fft=1536, hop_length=768)[1]
+#     dim_freq = 769
+#     dim_time = pha_pred.size(-1)
 
-    gd_matrix = (torch.triu(torch.ones(dim_freq, dim_freq), diagonal=1) - torch.triu(torch.ones(dim_freq, dim_freq), diagonal=2) - torch.eye(dim_freq)).to(device)
-    gd_r = torch.matmul(pha_target.permute(0, 2, 1), gd_matrix)
-    gd_g = torch.matmul(pha_pred.permute(0, 2, 1), gd_matrix)
+#     gd_matrix = (torch.triu(torch.ones(dim_freq, dim_freq), diagonal=1) - torch.triu(torch.ones(dim_freq, dim_freq), diagonal=2) - torch.eye(dim_freq)).to(pred.device)
+#     gd_r = torch.matmul(pha_target.permute(0, 2, 1), gd_matrix)
+#     gd_g = torch.matmul(pha_pred.permute(0, 2, 1), gd_matrix)
 
-    iaf_matrix = (torch.triu(torch.ones(dim_time, dim_time), diagonal=1) - torch.triu(torch.ones(dim_time, dim_time), diagonal=2) - torch.eye(dim_time)).to(device)
-    iaf_r = torch.matmul(pha_target, iaf_matrix)
-    iaf_g = torch.matmul(pha_pred, iaf_matrix)
+#     iaf_matrix = (torch.triu(torch.ones(dim_time, dim_time), diagonal=1) - torch.triu(torch.ones(dim_time, dim_time), diagonal=2) - torch.eye(dim_time)).to(pred.device)
+#     iaf_r = torch.matmul(pha_target, iaf_matrix)
+#     iaf_g = torch.matmul(pha_pred, iaf_matrix)
 
-    apd_ip = anti_wrapping_function(pha_pred - pha_target).square().mean(dim=1).sqrt().mean()
-    apd_gd = anti_wrapping_function(gd_r - gd_g).square().mean(dim=1).sqrt().mean()
-    apd_iaf = anti_wrapping_function(iaf_r - iaf_g).square().mean(dim=1).sqrt().mean()
+#     import pdb
+#     # pdb.set_trace()
+#     apd_ip = anti_wrapping_function(pha_pred - pha_target).square().mean(dim=1).sqrt().mean()
+#     apd_gd = anti_wrapping_function(gd_r - gd_g).square().mean(dim=1).sqrt().mean()
+#     apd_iaf = anti_wrapping_function(iaf_r - iaf_g).square().mean(dim=1).sqrt().mean()
 
-    return apd_ip, apd_gd, apd_iaf
+#     return apd_ip, apd_gd, apd_iaf
 
 
 def main(h):
 
     wav_indexes = os.listdir(h.reference_wav_dir)
-    
+    import pdb    
     metrics = {'lsd':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[], 'pesq':[]}
 
     for wav_index in track(wav_indexes):
-        import pdb
         ref_wav, ref_sr = torchaudio.load(os.path.join(h.reference_wav_dir, wav_index))
         syn_wav, syn_sr = torchaudio.load(os.path.join(h.synthesis_wav_dir, wav_index))
         # pdb.set_trace()
         
         resampler = T.Resample(orig_freq=48000, new_freq=16000).to(device)
-        # length = min(ref_wav.size(1), syn_wav.size(1))
-        length = syn_wav.size(1) - 400
+        length = min(ref_wav.size(1), syn_wav.size(1)) - 500
+        # length = syn_wav.size(1) - 400
         ref_wav = ref_wav[:, : length].to(device)
         syn_wav = syn_wav[:, : length].to(device)
         
@@ -135,10 +151,17 @@ def main(h):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--reference_wav_dir', default='/home/woongzip/Dataset/DAPS_gt_small')
-    parser.add_argument('--reference_wav_dir', default='/home/woongzip/dataset_12/USAC44_GT')
+    # parser.add_argument('--reference_wav_dir', default='./inference/groundtruth/speech')
+    parser.add_argument('--reference_wav_dir', default='./inference/target_lpf/audio')
+    # parser.add_argument('--reference_wav_dir', default='./inference/exp5_norvq/speech/')
+    parser.add_argument('--synthesis_wav_dir', default='./inference/exp5_rvq/speech/')
     
-    parser.add_argument('--synthesis_wav_dir', default='./inference/seanet/100k')
+    # parser.add_argument('--synthesis_wav_dir', default='./inference/seanet/speech')
+    # parser.add_argument('--synthesis_wav_dir', default='./inference/apbwe768_blind/speech')
+    # parser.add_argument('--reference_wav_dir', default='./inference/USAC44_GT')
+    # parser.add_argument('--synthesis_wav_dir', default='./inference/seanet/audio')
+    # parser.add_argument('--synthesis_wav_dir', default='./inference/apbwe_blind/audio')
+    
     h = parser.parse_args()
 
     global device

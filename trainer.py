@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import pdb
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -84,27 +85,86 @@ class Trainer:
     def _forward_pass(self, lr_waveform, hr_waveform=None,):
         if self.config.generator.type == "seanet":
             audio_wb_g = self.generator(lr_waveform)
-            mag_wb_g = 0
-            pha_wb_g = 0
+            spectrum = {}
+            loss_dict = {}
         elif self.config.generator.type == "resnet_apbwe":
-            audio_wb_g, commit_loss, codebook_loss = self.generator(lr_waveform, hr_waveform)
+            audio_wb_g, spectrum, loss_dict = self.generator(lr_waveform, hr_waveform)
         else:
             mag_nb, pha_nb, _ = amp_pha_stft(lr_waveform.squeeze(1), self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
             mag_wb_g, pha_wb_g, com_wb_g = self.generator(mag_nb, pha_nb)
             audio_wb_g = amp_pha_istft(mag_wb_g, pha_wb_g, self.config.stft.n_fft, self.config.stft.hop_size, self.config.stft.win_size)
+            spectrum = {
+                'log_amp': mag_wb_g,
+                'phase': pha_wb_g
+                }
+            loss_dict = {}
+        return audio_wb_g, spectrum, loss_dict
 
-        return audio_wb_g, commit_loss, codebook_loss
+    def _pad_signal(self, waveform:torch.tensor, multiple_factor:int):
+        pad_len = (multiple_factor - waveform.shape[-1] % multiple_factor) % multiple_factor
+        if pad_len > 0:
+            waveform = F.pad(waveform, (0, pad_len))
+        return waveform, pad_len
+    
+    def _generate_target_signal(self, lr, hr, cutoff_freq=4000, sr=48000, n_fft=1536, hop_length=768):
+        # Connsider this setting is valid ?
+        lr, pad_len = self._pad_signal(lr, multiple_factor=n_fft)
+        hr, pad_len = self._pad_signal(hr, multiple_factor=n_fft)
+        
+        # Maintain narrow band spectrum
+        hann_window = torch.hann_window(n_fft).to(lr.device)
+        lr_spec = torch.stft(lr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+        hr_spec = torch.stft(hr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+        freq_bin = int((cutoff_freq / sr) * n_fft) 
 
+        new_spec = torch.cat([
+            lr_spec[:,:freq_bin, :],  # low freq from LR
+            hr_spec[:,freq_bin:, :]   # high freq from HR
+        ], dim=1) # [B,F,T]
+
+        # log_amp = torch.log1p(torch.abs(new_spec))
+        log_amp = torch.log(torch.abs(new_spec) + 1e-4)
+        phase = torch.angle(new_spec)
+        spectrum = {
+                'log_amp': log_amp,
+                'phase': phase
+            }
+        # pdb.set_trace()
+        target_waveform = torch.istft(new_spec, n_fft=n_fft, hop_length=hop_length,  window=hann_window, length=hr.shape[-1])
+        target_waveform = target_waveform[...,:-pad_len]
+        return target_waveform, spectrum
 
     def train_step(self, hr, lr, step, pretrain_step=0):
         self.generator.train()
         self.discriminator.train()
 
         # forward
-        audio_wb_g, commit_loss, codebook_loss = self._forward_pass(lr, hr_waveform=hr)
+        audio_wb_g, spectrum_g, q_loss_dict = self._forward_pass(lr, hr_waveform=hr)
+        phase_g = spectrum_g['phase'] if spectrum_g is not None else None
+        complex_g = spectrum_g['complex'] if spectrum_g is not None else None
+        
+        commit_loss = q_loss_dict.get('commit_loss', 0)
+        codebook_loss = q_loss_dict.get('codebook_loss', 0)
 
+        # Generate target signal
+        hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=self.config.dataset.get('core_cutoff', 4000))
+        phase_r = spectrum_r['phase']
+        
+        # pdb.set_trace()
         # Generator Loss 
-        loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, commit_loss=commit_loss, codebook_loss=codebook_loss)
+        # loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, commit_loss=commit_loss, codebook_loss=codebook_loss)
+        loss_dict =  self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, 
+                                                                 commit_loss=commit_loss, codebook_loss=codebook_loss,
+                                                                 phase_r=phase_r, phase_g=phase_g,
+                                                                 stft_from_model=complex_g, config=self.config 
+                                                                 )
+        loss_G = loss_dict['total']
+        ms_mel_loss_value = loss_dict['mel']
+        phase_loss_dict = loss_dict['phase_dict']
+        phase_loss = loss_dict['phase']
+        consistency_loss = loss_dict['consistency']
+        g_loss_dict = loss_dict['g_loss_dict']
+        g_loss_report = loss_dict['g_report']
         
         #### for gradient exploding ####
         if ms_mel_loss_value > 100:
@@ -135,11 +195,15 @@ class Trainer:
         step_result = {
             'loss_G': loss_G.item(),
             'ms_mel_loss': ms_mel_loss_value.item() if ms_mel_loss_value else 0,
+            'phase_loss': phase_loss.item() if phase_loss else 0,
+            'consistency_loss': consistency_loss.item() if consistency_loss else 0,
             # 'loss_D': loss_D.item(),
             **{f'G_{k}': v.item() if isinstance(v, torch.Tensor) else v for k, v in g_loss_dict.items()},
             **{f'D_{k}': v.item() if isinstance(v, torch.Tensor) else v for k, v in d_loss_dict.items()},
             **{f'G_report_{k}': v for k, v in g_loss_report.items()},  
             **{f'D_report_{k}': v for k, v in d_loss_report.items()},  
+            **({f'G_phase_{k}': v.item() if isinstance(v, torch.Tensor) else v for k, v in phase_loss_dict.items()}
+                if phase_loss_dict else {})
             }
         if self.if_log_step and step % 100 == 0:
             self.unified_log(step_result, 'train', step=step)
@@ -151,23 +215,42 @@ class Trainer:
         self.discriminator.eval()
 
         result = {
-            key: 0 for key in ['adv_g', 'fm', 'loss_D', 'ms_mel_loss', 'codebook_loss', 'LSD_L', 'LSD_H']
+            key: 0 for key in ['adv_g', 'fm', 'loss_D', 'ms_mel_loss', 'codebook_loss', 'LSD_L', 'LSD_H',
+                               'phase_ip', 'phase_gd', 'phase_iaf',
+                               'consistency',
+                               ]
         }
 
         with torch.no_grad():
             for i, (hr, lr, _) in enumerate(tqdm(self.val_loader, desc='Validation')):
                 lr, hr = lr.to(self.device), hr.to(self.device)
+ 
+                audio_wb_g, spectrum_g, q_loss_dict = self._forward_pass(lr, hr_waveform=hr)
+                phase_g = spectrum_g['phase'] if spectrum_g is not None else None
+                complex_g = spectrum_g['complex'] if spectrum_g is not None else None
                 
-                audio_wb_g, commit_loss, codebook_loss = self._forward_pass(lr, hr_waveform=hr)
+                commit_loss = q_loss_dict.get('commit_loss', 0)
+                codebook_loss = q_loss_dict.get('codebook_loss', 0)
+
+                # Generate target signal
+                hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=self.config.dataset.get('core_cutoff', 4000))
+                phase_r = spectrum_r['phase']
 
                 # Generator Loss (adv + fm + mel)
-                loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(
-                    hr=hr, x_hat_full=audio_wb_g,
-                    codebook_loss = codebook_loss, commit_loss = commit_loss,
-                )
+                # loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(
+                #     hr=hr, x_hat_full=audio_wb_g,
+                #     codebook_loss = codebook_loss, commit_loss = commit_loss,
+                # )
+                loss_dict =  self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, 
+                                                                         commit_loss=commit_loss, codebook_loss=codebook_loss,
+                                                                         phase_r=phase_r, phase_g=phase_g,
+                                                                         stft_from_model=complex_g, config=self.config)
+                loss_G = loss_dict['total']
+                ms_mel_loss_value = loss_dict['mel']
+                phase_loss_dict = loss_dict['phase_dict']
+                g_loss_dict = loss_dict['g_loss_dict']              
 
                 # Discriminator Loss
-                
                 loss_D, d_loss_dict, d_loss_report = self.loss_calculator.compute_discriminator_loss(hr, audio_wb_g)
 
                 # LSD 
@@ -180,14 +263,22 @@ class Trainer:
                 result['fm'] += g_loss_dict.get('fm', 0).item()
                 result['codebook_loss'] += codebook_loss.item() if codebook_loss else 0
                 result['ms_mel_loss'] += ms_mel_loss_value.item() if ms_mel_loss_value else 0
+                result['consistency'] += loss_dict['consistency']
                 result['loss_D'] += loss_D.item()
+                if phase_loss_dict:
+                    result['phase_ip'] += phase_loss_dict.get('ip_loss', 0).item()
+                    result['phase_gd'] += phase_loss_dict.get('gd_loss', 0).item()
+                    result['phase_iaf'] += phase_loss_dict.get('iaf_loss', 0).item()
 
                 # Logging
                 if i == 5:
                     draw_spec(hr.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='gt',return_fig=False)
                     draw_spec(lr.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='lr',return_fig=False)
                     draw_spec(audio_wb_g.squeeze().cpu().numpy(), win_len=1024, sr=48000, use_colorbar=False, hop_len=256, save_fig=True, save_path='recon',return_fig=False)              
-                
+                    import soundfile
+                    soundfile.write("temp.wav", hr.squeeze().cpu().numpy(), samplerate=48000)
+                    print('write!')
+                    
                 if i in [0, 5, 33]:
                     if not self.hr_logged:
                         self.unified_log({
@@ -270,7 +361,9 @@ class Trainer:
                 # Update tqdm description with specific losses
                 progress_bar.set_postfix({
                     'loss_G': step_result.get('loss_G', 0),
-                    'mel_loss': step_result.get('ms_mel_loss', 0),
+                    'mel': step_result.get('ms_mel_loss', 0),
+                    'phase': step_result.get('phase_loss', 0),
+                    'consistency': step_result.get('consistency_loss', 0),
                 })
                 # update scheduler
                 self.scheduler_G.step()

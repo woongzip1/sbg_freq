@@ -13,7 +13,7 @@ sys.path.append("..")
 from utils import count_model_params
 
 MODEL_MAP = {
-    'generator': APNet_BWE_Model,
+    'apbwe': APNet_BWE_Model,
     'seanet': SEANet,
     'resnet_apbwe': ResNet_APBWE,
     }
@@ -100,14 +100,14 @@ def prepare_generator(config:Box, MODEL_MAP):
     pha_nb = torch.randn(1,513,400)
     try:
         if gen_type == "seanet":
-            summary(generator, input_data=[lr], depth=2,
+            summary(generator, input_data=[lr], depth=3,
                 col_names=["input_size", "output_size", "num_params",])
         elif gen_type == 'resnet_apbwe':
-            summary(generator, input_data=[lr,hr], depth=1,
+            summary(generator, input_data=[lr,hr], depth=3,
                 col_names=["input_size", "output_size", "num_params",])
         else:
-            summary(generator, input_data=[mag_nb, pha_nb], depth=2,
-                col_names=["input_size", "output_size", "num_params",])
+            summary(generator, input_data=[mag_nb, pha_nb], depth=3,
+                col_names=["input_size", "output_size", "num_params", "kernel_size"])
         
     except Exception as e:
         print(f"⚠️ torchinfo.summary failed: {e}")

@@ -1,13 +1,18 @@
 **__pycache__/
 *.png
 bash.sh
+send_data.sh
 
 notebooks/temp*.ipynb
+notebooks/copute_*.ipynb
+
+
 inference/
 ckpts/
 wandb/
 
 _trainer*.py
+
 
 configs/*
 !configs/config_template.yaml

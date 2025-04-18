@@ -114,7 +114,11 @@ class ResNet_APBWE(nn.Module):
         return model
     
     def _build_quantizer(self, cfg):
-        return ResidualVectorQuantize(**cfg)
+        args = cfg.copy()
+        if 'apply_quantize' in args:
+            del args['apply_quantize']
+        # pdb.set_trace()
+        return ResidualVectorQuantize(**args)
     
     def extract_sideinfo(self, wb_input):
         """ Encoding STFT parameters """
@@ -145,7 +149,7 @@ class ResNet_APBWE(nn.Module):
             out = self._compute_istft(log_amp, pha, **self.h.decoder_cfg.stft)
         else:
             NotImplementedError("Time domain input")
-        return out
+        return out, {'log_amp': log_amp, 'phase':pha, 'complex': com}
     
     def inference(self, nb_input, quantized_condition, **kwargs):
         NotImplementedError("Inference method not implemened.")
@@ -165,14 +169,20 @@ class ResNet_APBWE(nn.Module):
         Quantize
         BWE with Condition (TBD)
         """
-        # sideinfo, code, latents, commit_loss, codebook_loss = self.quantize_sideinfo(sideinfo, **kwargs) # [B,C,T]
-        commit_loss = 0
-        codebook_loss = 0
+        if not getattr(self.h.quantizer_cfg, 'apply_quantize', True):
+            commit_loss, codebook_loss = 0,0
+        else:
+            sideinfo, code, latents, commit_loss, codebook_loss = self.quantize_sideinfo(sideinfo, **kwargs) # [B,C,T]
         
-        out = self.decode(nb_input, sideinfo, **kwargs)
+        # pdb.set_trace()
+        out, spectrum = self.decode(nb_input, sideinfo, **kwargs)
         ## reconstruct waveform length
         out = out[...,:-pad_len].unsqueeze(1)
-        return out, commit_loss, codebook_loss
+        loss_dict = {
+            'commit_loss': commit_loss,
+            'codebook_loss': codebook_loss
+        }
+        return out, spectrum, loss_dict
     
 def main():
     from main import load_config
@@ -195,7 +205,6 @@ def main():
             # col_names=["input_size", "output_size", "num_params",], depth=3)   
     summary(model, input_data=[nb, wb], 
             col_names=["input_size", "output_size", "num_params",], depth=3)   
-    
     
 if __name__ == "__main__":
     main()

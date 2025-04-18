@@ -6,6 +6,14 @@ import torch
 import wandb
 from scipy.signal import stft
 
+def plot_signals(x, x_hat, range=[10000,15000],figsize=(10,2), diff=0.01):
+    plt.figure(figsize=figsize)
+    plt.plot(x, label='gt')
+    plt.plot(x_hat+diff, label='s')
+    plt.xlim(range)
+    plt.legend()
+    plt.show()
+    
 def draw_spec(x,
               figsize=(10, 6), title='', n_fft=2048,
               win_len=1024, hop_len=256, sr=16000, cmap='inferno',

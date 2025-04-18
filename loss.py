@@ -1,20 +1,29 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio.transforms as T
 from torch.signal.windows import hann
 # from soundstream.balancer import *
-##
+
+
+## To Do: loss into dictionary ...
+
 class LossCalculator:
     def __init__(self, config, discriminator):
         self.discriminator = discriminator
-        self.lambda_adv_loss = config['loss']['lambda_adv_loss']
-        self.lambda_fm_loss = config['loss']['lambda_fm_loss']
-        self.lambda_mel_loss = config['loss']['lambda_mel_loss']
-        self.lambda_codebook_loss = config['loss']['lambda_codebook_loss']
-        self.lambda_commit_loss = config['loss']['lambda_commit_loss']
         self.ms_mel_loss_config = config['loss']['ms_mel_loss_config']
+        
+        self.lambda_loss = {
+            'adv': config['loss'].get('lambda_adv_loss', 0),
+            'fm': config['loss'].get('lambda_fm_loss', 0),
+            'mel': config['loss'].get('lambda_mel_loss', 0),
+            'codebook': config['loss'].get('lambda_codebook_loss', 0),
+            'commit': config['loss'].get('lambda_commit_loss', 0),
+            'phase': config['loss'].get('lambda_phase_loss', 0),
+            'consistency': config['loss'].get('lambda_consistency_loss', 0),
+        }
         
     def _save_figures(self, hr, x_hat_full):
         ## for debugging
@@ -49,27 +58,110 @@ class LossCalculator:
         codebook_loss = kwargs.get('codebook_loss', 0)
         
         # mel loss
-        if self.lambda_mel_loss:
-            ms_mel_loss_value = ms_mel_loss(hr, x_hat_full, **self.ms_mel_loss_config)
+        ms_mel_loss_value = (
+            ms_mel_loss(hr, x_hat_full, **self.ms_mel_loss_config)
+            if self.lambda_loss['mel'] > 0 else 0   
+        )
+        
+        # stft consistency loss
+        consistency_loss = (
+            stft_consistency_loss(wav=x_hat_full, 
+                                  stft_from_model=kwargs.get('stft_from_model', None), 
+                                  config=kwargs.get('config', None))    
+            if self.lambda_loss['consistency'] > 0 else 0
+        )
+        
+        # phase loss
+        if self.lambda_loss['phase'] > 0:
+            phase_r = kwargs.get('phase_r', None)
+            phase_g = kwargs.get('phase_g', None)
+            import pdb
+            # pdb.set_trace()
+            
+            phase_loss_dict = phase_losses(phase_r=phase_r, phase_g=phase_g)
+            phase_loss = phase_loss_dict['total']
         else:
-            ms_mel_loss_value = 0
-
+            phase_loss_dict = {}
+            phase_loss = 0
+            
         # Generator loss
         loss_G = (
-            self.lambda_adv_loss * g_loss_dict.get('adv_g', 0) +
-            self.lambda_fm_loss * g_loss_dict.get('fm', 0) +
-            self.lambda_mel_loss * ms_mel_loss_value +
-            self.lambda_codebook_loss * codebook_loss +
-            self.lambda_commit_loss * commit_loss
+            self.lambda_loss['adv'] * g_loss_dict.get('adv_g', 0) +
+            self.lambda_loss['fm'] * g_loss_dict.get('fm', 0) +
+            self.lambda_loss['mel'] * ms_mel_loss_value +
+            self.lambda_loss['codebook'] * codebook_loss +
+            self.lambda_loss['commit'] * commit_loss +
+            self.lambda_loss['phase'] * phase_loss + 
+            self.lambda_loss['consistency'] * consistency_loss
         )
-
-        return loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report
+        
+        loss_dict = {
+            'total': loss_G,
+            'mel': ms_mel_loss_value,
+            'adv': g_loss_dict.get('adv_g', 0),
+            'fm': g_loss_dict.get('fm', 0),
+            'codebook': codebook_loss,
+            'commit': commit_loss,
+            'phase': phase_loss,
+            'phase_dict': phase_loss_dict,
+            'consistency': consistency_loss,
+            'g_loss_dict': g_loss_dict,
+            'g_report': g_loss_report,
+        }
+        
+        # return loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report
+        return loss_dict
 
     def compute_discriminator_loss(self, hr, x_hat_full):
         d_loss_dict, d_loss_report = self.discriminator.d_loss(hr, x_hat_full, adv_loss_type='hinge')
         loss_D = d_loss_dict.get('adv_d', 0)
         # loss_D = sum(d_loss_dict.values())
+        # loss_dict = {
+        #     'total': loss_D,
+        #     'd_loss_dict': d_loss_dict,
+        #     'd_report': d_loss_report,
+        # }
         return loss_D, d_loss_dict, d_loss_report
+        # return loss_dict
+
+def wav_to_stft(x, config):
+    config = config.generator.decoder_cfg.stft
+    # pad
+    pad_len = (config.n_fft - x.shape[-1] % config.n_fft) % config.n_fft
+    if pad_len > 0:
+        x = F.pad(x, (0, pad_len))
+    complex_stft = torch.stft(x, window=torch.hann_window(config.n_fft).to(x.device), return_complex=False, **config)
+    return complex_stft
+
+def stft_consistency_loss(wav, stft_from_model, config):
+    stft_from_wav = wav_to_stft(wav, config)
+    import pdb
+    # pdb.set_trace()
+    consistency_loss = F.mse_loss(stft_from_wav, stft_from_model)
+    return consistency_loss
+
+
+def phase_losses(phase_r, phase_g):
+    """
+    phase_r: real data
+    phase_g: generated data
+    """
+    phase_loss_dict = {}
+    print('phase shape:', phase_r.shape)
+    phase_loss_dict['ip_loss'] = torch.mean(anti_wrapping_function(phase_r - phase_g))
+    phase_loss_dict['gd_loss'] =  torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=1) - torch.diff(phase_g, dim=1)))
+    phase_loss_dict['iaf_loss'] = torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=2) - torch.diff(phase_g, dim=2)))
+    # return ip_loss, gd_loss, iaf_loss
+    phase_loss_dict['total'] = (
+        phase_loss_dict['ip_loss'] +
+        phase_loss_dict['gd_loss'] +
+        phase_loss_dict['iaf_loss']
+    )
+    return phase_loss_dict 
+
+def anti_wrapping_function(x):
+    return torch.abs(x - torch.round(x / (2 * np.pi)) * 2 * np.pi)
+
     
 def compute_subband_loss(hf_estimate: torch.Tensor, target_subbands: torch.Tensor):
     subband_loss, sc_loss, mag_loss = ms_stft_loss(x=target_subbands, x_hat=hf_estimate)
