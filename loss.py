@@ -23,6 +23,7 @@ class LossCalculator:
             'commit': config['loss'].get('lambda_commit_loss', 0),
             'phase': config['loss'].get('lambda_phase_loss', 0),
             'consistency': config['loss'].get('lambda_consistency_loss', 0),
+            'logamp': config['loss'].get('lambda_logamp_loss', 0),
         }
         
     def _save_figures(self, hr, x_hat_full):
@@ -70,7 +71,13 @@ class LossCalculator:
                                   config=kwargs.get('config', None))    
             if self.lambda_loss['consistency'] > 0 else 0
         )
-        
+        # logamp loss
+        logamp_loss_val = (
+                logamp_loss(
+                    logamp_r=kwargs.get('logamp_r', None),
+                    logamp_g=kwargs.get('logamp_g', None)
+                ) if self.lambda_loss['logamp'] > 0 else 0
+        )
         # phase loss
         if self.lambda_loss['phase'] > 0:
             phase_r = kwargs.get('phase_r', None)
@@ -92,9 +99,10 @@ class LossCalculator:
             self.lambda_loss['codebook'] * codebook_loss +
             self.lambda_loss['commit'] * commit_loss +
             self.lambda_loss['phase'] * phase_loss + 
-            self.lambda_loss['consistency'] * consistency_loss
+            self.lambda_loss['consistency'] * consistency_loss +
+            self.lambda_loss['logamp'] * logamp_loss_val
         )
-        
+
         loss_dict = {
             'total': loss_G,
             'mel': ms_mel_loss_value,
@@ -105,6 +113,7 @@ class LossCalculator:
             'phase': phase_loss,
             'phase_dict': phase_loss_dict,
             'consistency': consistency_loss,
+            'logamp': logamp_loss_val,
             'g_loss_dict': g_loss_dict,
             'g_report': g_loss_report,
         }
@@ -137,8 +146,26 @@ def stft_consistency_loss(wav, stft_from_model, config):
     stft_from_wav = wav_to_stft(wav, config)
     import pdb
     # pdb.set_trace()
-    consistency_loss = F.mse_loss(stft_from_wav, stft_from_model)
+    # sc_loss = torch.norm(T - S, p='fro') / (torch.norm(T, p='fro') + 1e-7)
+    # import pdb
+    # pdb.set_trace()
+
+    ## sample stft value > 1000 ...
+    consistency_loss = F.mse_loss(stft_from_wav[:,:,:-1,:], stft_from_model[:,:,:-1,:])
     return consistency_loss
+
+# def stft_consistency_loss(wav, stft_from_model, config, eps=1e-7):
+#     T = wav_to_stft(wav, config)  # complex tensor [B, F, T]
+#     S = stft_from_model
+#     T_r, T_i = T[...,0], T[...,1]
+#     S_r, S_i = S[...,0], S[...,1]
+#     sc_r = torch.norm(T_r - S_r, p='fro') / (torch.norm(T_r, p='fro') + eps)
+#     sc_i = torch.norm(T_i - S_i, p='fro') / (torch.norm(T_i, p='fro') + eps)
+#     return 0.5 * (sc_r + sc_i)
+
+
+def logamp_loss(logamp_r, logamp_g):
+    return F.mse_loss(logamp_r, logamp_g)
 
 
 def phase_losses(phase_r, phase_g):
@@ -147,7 +174,9 @@ def phase_losses(phase_r, phase_g):
     phase_g: generated data
     """
     phase_loss_dict = {}
-    print('phase shape:', phase_r.shape)
+    # print('phase shape:', phase_r.shape)
+    # import pdb
+    # pdb.set_trace()
     phase_loss_dict['ip_loss'] = torch.mean(anti_wrapping_function(phase_r - phase_g))
     phase_loss_dict['gd_loss'] =  torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=1) - torch.diff(phase_g, dim=1)))
     phase_loss_dict['iaf_loss'] = torch.mean(anti_wrapping_function(torch.diff(phase_r, dim=2) - torch.diff(phase_g, dim=2)))

@@ -7,7 +7,7 @@ import wandb
 from datetime import datetime
 import os
 import gc
-from utils import draw_spec, lsd_batch
+from utils import draw_spec, lsd_batch, draw_2d_heatmap, debug_stft_loss
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -122,15 +122,16 @@ class Trainer:
             hr_spec[:,freq_bin:, :]   # high freq from HR
         ], dim=1) # [B,F,T]
 
-        # log_amp = torch.log1p(torch.abs(new_spec))
-        log_amp = torch.log(torch.abs(new_spec) + 1e-4)
-        phase = torch.angle(new_spec)
+        target_waveform = torch.istft(new_spec, n_fft=n_fft, hop_length=hop_length,  window=hann_window, length=hr.shape[-1])
+        
+        # consistency
+        spec = torch.stft(target_waveform, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+        log_amp = torch.log(torch.abs(spec) + 1e-4)
+        phase = torch.angle(spec)
         spectrum = {
                 'log_amp': log_amp,
                 'phase': phase
-            }
-        # pdb.set_trace()
-        target_waveform = torch.istft(new_spec, n_fft=n_fft, hop_length=hop_length,  window=hann_window, length=hr.shape[-1])
+        }
         target_waveform = target_waveform[...,:-pad_len]
         return target_waveform, spectrum
 
@@ -142,6 +143,7 @@ class Trainer:
         audio_wb_g, spectrum_g, q_loss_dict = self._forward_pass(lr, hr_waveform=hr)
         phase_g = spectrum_g['phase'] if spectrum_g is not None else None
         complex_g = spectrum_g['complex'] if spectrum_g is not None else None
+        logamp_g = spectrum_g['log_amp'] if spectrum_g is not None else None
         
         commit_loss = q_loss_dict.get('commit_loss', 0)
         codebook_loss = q_loss_dict.get('codebook_loss', 0)
@@ -149,13 +151,15 @@ class Trainer:
         # Generate target signal
         hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=self.config.dataset.get('core_cutoff', 4000))
         phase_r = spectrum_r['phase']
-        
+        logamp_r = spectrum_r['log_amp']
+
         # pdb.set_trace()
         # Generator Loss 
         # loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, commit_loss=commit_loss, codebook_loss=codebook_loss)
         loss_dict =  self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, 
                                                                  commit_loss=commit_loss, codebook_loss=codebook_loss,
                                                                  phase_r=phase_r, phase_g=phase_g,
+                                                                 logamp_r=logamp_r, logamp_g=logamp_g,
                                                                  stft_from_model=complex_g, config=self.config 
                                                                  )
         loss_G = loss_dict['total']
@@ -163,13 +167,9 @@ class Trainer:
         phase_loss_dict = loss_dict['phase_dict']
         phase_loss = loss_dict['phase']
         consistency_loss = loss_dict['consistency']
+        logamp_loss = loss_dict['logamp']
         g_loss_dict = loss_dict['g_loss_dict']
         g_loss_report = loss_dict['g_report']
-        
-        #### for gradient exploding ####
-        if ms_mel_loss_value > 100:
-            raise ValueError("Gradient Exploded!")        
-        ########################
         
         # Train generator
         self.optim_G.zero_grad()
@@ -178,8 +178,22 @@ class Trainer:
         # gradient clip
         # if step < 2000:
         clip_grad_norm_(self.generator.parameters(), max_norm=3.0)
-        
         self.optim_G.step()
+
+        #### for gradient exploding ####
+        if ms_mel_loss_value > 100:
+            raise ValueError("Gradient Exploded!")  
+        
+        if consistency_loss > 0.1:
+            debug_stft_loss(
+                            complex_g=complex_g,
+                            audio_wb_g=audio_wb_g,
+                            step=step,
+                            consistency_loss=consistency_loss,
+                            stft_cfg=self.config.generator.decoder_cfg.stft,
+                            threshold=50,
+                        )
+        ########################
 
         if step >= pretrain_step: # Train discriminator
             loss_D, d_loss_dict, d_loss_report = self.loss_calculator.compute_discriminator_loss(hr, audio_wb_g)
@@ -197,6 +211,7 @@ class Trainer:
             'ms_mel_loss': ms_mel_loss_value.item() if ms_mel_loss_value else 0,
             'phase_loss': phase_loss.item() if phase_loss else 0,
             'consistency_loss': consistency_loss.item() if consistency_loss else 0,
+            'logamp_loss': logamp_loss.item() if logamp_loss else 0,
             # 'loss_D': loss_D.item(),
             **{f'G_{k}': v.item() if isinstance(v, torch.Tensor) else v for k, v in g_loss_dict.items()},
             **{f'D_{k}': v.item() if isinstance(v, torch.Tensor) else v for k, v in d_loss_dict.items()},
@@ -217,7 +232,7 @@ class Trainer:
         result = {
             key: 0 for key in ['adv_g', 'fm', 'loss_D', 'ms_mel_loss', 'codebook_loss', 'LSD_L', 'LSD_H',
                                'phase_ip', 'phase_gd', 'phase_iaf',
-                               'consistency',
+                               'consistency', 'logamp',
                                ]
         }
 
@@ -228,13 +243,15 @@ class Trainer:
                 audio_wb_g, spectrum_g, q_loss_dict = self._forward_pass(lr, hr_waveform=hr)
                 phase_g = spectrum_g['phase'] if spectrum_g is not None else None
                 complex_g = spectrum_g['complex'] if spectrum_g is not None else None
-                
+                logamp_g = spectrum_g['log_amp'] if spectrum_g is not None else None
+
                 commit_loss = q_loss_dict.get('commit_loss', 0)
                 codebook_loss = q_loss_dict.get('codebook_loss', 0)
 
                 # Generate target signal
                 hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=self.config.dataset.get('core_cutoff', 4000))
                 phase_r = spectrum_r['phase']
+                logamp_r = spectrum_r['log_amp']
 
                 # Generator Loss (adv + fm + mel)
                 # loss_G, ms_mel_loss_value, g_loss_dict, g_loss_report = self.loss_calculator.compute_generator_loss(
@@ -244,6 +261,7 @@ class Trainer:
                 loss_dict =  self.loss_calculator.compute_generator_loss(hr=hr, x_hat_full=audio_wb_g, 
                                                                          commit_loss=commit_loss, codebook_loss=codebook_loss,
                                                                          phase_r=phase_r, phase_g=phase_g,
+                                                                         logamp_r=logamp_r, logamp_g=logamp_g,
                                                                          stft_from_model=complex_g, config=self.config)
                 loss_G = loss_dict['total']
                 ms_mel_loss_value = loss_dict['mel']
@@ -264,6 +282,7 @@ class Trainer:
                 result['codebook_loss'] += codebook_loss.item() if codebook_loss else 0
                 result['ms_mel_loss'] += ms_mel_loss_value.item() if ms_mel_loss_value else 0
                 result['consistency'] += loss_dict['consistency']
+                result['logamp'] += loss_dict['logamp']
                 result['loss_D'] += loss_D.item()
                 if phase_loss_dict:
                     result['phase_ip'] += phase_loss_dict.get('ip_loss', 0).item()

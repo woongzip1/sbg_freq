@@ -65,6 +65,7 @@ class VocosBWE(torch.nn.Module):
         # x = torch.cos(pha_wb)
         # y = torch.sin(pha_wb)
         # pha_wb = x + 1j * y
+        
         # com_wb = mag_wb * pha_wb
         ## pha_wb = torch.atan2(y, x)
         ## audio = torch.istft(com_wb)

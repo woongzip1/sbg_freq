@@ -62,8 +62,8 @@ class ResNet_APBWE(nn.Module):
 
     def _compute_istft(self, log_amp, pha, n_fft, hop_length, win_length, center=True):
         amp = torch.exp(log_amp)
-        amp = torch.clip(amp, max=1e2) # added
-        com = torch.complex(amp*torch.cos(pha), amp*torch.sin(pha))
+        # amp = torch.clip(amp, max=1e4) # Vocos ?
+        com = torch.complex(amp*torch.cos(pha), amp*torch.sin(pha)) # AP output 은 unwrap 돼있는데 직접 주면 안됨
         hann_window = torch.hann_window(win_length).to(com.device)
         audio = torch.istft(com, n_fft, hop_length=hop_length, win_length=win_length, window=hann_window, center=center)
         return audio

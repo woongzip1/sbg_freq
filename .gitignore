@@ -1,4 +1,5 @@
 **__pycache__/
+debug/
 *.png
 bash.sh
 send_data.sh
