@@ -106,36 +106,92 @@ class Trainer:
             waveform = F.pad(waveform, (0, pad_len))
         return waveform, pad_len
     
+    # def _generate_target_signal(self, lr, hr, cutoff_freq=4000, sr=48000, n_fft=1536, hop_length=768):
+    #     # Connsider this setting is valid ?
+    #     lr, pad_len = self._pad_signal(lr, multiple_factor=n_fft)
+    #     hr, pad_len = self._pad_signal(hr, multiple_factor=n_fft)
+        
+    #     # Maintain narrow band spectrum
+    #     hann_window = torch.hann_window(n_fft).to(lr.device)
+    #     lr_spec = torch.stft(lr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+    #     hr_spec = torch.stft(hr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+    #     freq_bin = int((cutoff_freq / sr) * n_fft) 
+
+    #     new_spec = torch.cat([
+    #         lr_spec[:,:freq_bin, :],  # low freq from LR
+    #         hr_spec[:,freq_bin:, :]   # high freq from HR
+    #     ], dim=1) # [B,F,T]
+
+    #     target_waveform = torch.istft(new_spec, n_fft=n_fft, hop_length=hop_length,  window=hann_window, length=hr.shape[-1])
+        
+    #     # consistency
+    #     spec = torch.stft(target_waveform, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+    #     log_amp = torch.log(torch.abs(spec) + 1e-4)
+    #     phase = torch.angle(spec)
+    #     spectrum = {
+    #             'log_amp': log_amp,
+    #             'phase': phase
+    #     }
+    #     target_waveform = target_waveform[...,:-pad_len]
+    #     return target_waveform, spectrum
+    
     def _generate_target_signal(self, lr, hr, cutoff_freq=4000, sr=48000, n_fft=1536, hop_length=768):
-        # Connsider this setting is valid ?
+        # Pad to multiple of n_fft
         lr, pad_len = self._pad_signal(lr, multiple_factor=n_fft)
-        hr, pad_len = self._pad_signal(hr, multiple_factor=n_fft)
-        
-        # Maintain narrow band spectrum
+        hr, _       = self._pad_signal(hr, multiple_factor=n_fft)
+        B = lr.shape[0]
         hann_window = torch.hann_window(n_fft).to(lr.device)
-        lr_spec = torch.stft(lr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
-        hr_spec = torch.stft(hr, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
-        freq_bin = int((cutoff_freq / sr) * n_fft) 
+        lr_spec = torch.stft(lr, n_fft=n_fft, hop_length=hop_length,
+                            window=hann_window, return_complex=True)  # [B, F, T]
+        hr_spec = torch.stft(hr, n_fft=n_fft, hop_length=hop_length,
+                            window=hann_window, return_complex=True)
 
-        new_spec = torch.cat([
-            lr_spec[:,:freq_bin, :],  # low freq from LR
-            hr_spec[:,freq_bin:, :]   # high freq from HR
-        ], dim=1) # [B,F,T]
+            # freq_bin = int((cutoff_freq / sr) * n_fft)
+            # new_spec = torch.cat([
+            #     lr_spec[:, :freq_bin, :],
+            #     hr_spec[:, freq_bin:, :]
+            # ], dim=1)
+        if isinstance(cutoff_freq, torch.Tensor) and cutoff_freq.dim() == 1:
+            # --- per-sample cutoff
+            freq_bin_tensor = ((cutoff_freq / sr) * n_fft).long()  # [B] cutoff freq in bins
+            F, T = lr_spec.shape[1:] # spec shape
+            device = lr.device
 
-        target_waveform = torch.istft(new_spec, n_fft=n_fft, hop_length=hop_length,  window=hann_window, length=hr.shape[-1])
-        
-        # consistency
-        spec = torch.stft(target_waveform, n_fft=n_fft, hop_length=hop_length, window=hann_window, return_complex=True)
+            # Create [B, F, T] mask
+            freq_range = torch.arange(F, device=device).unsqueeze(0)  # [1, F]
+            cutoff_bin = freq_bin_tensor.unsqueeze(1)                # [B, 1]
+            lr_mask = (freq_range < cutoff_bin)                      # [B, F]
+            hr_mask = ~lr_mask
+
+            # Expand to [B, F, T]
+            lr_mask = lr_mask.unsqueeze(-1).expand(-1, -1, T)
+            hr_mask = hr_mask.unsqueeze(-1).expand(-1, -1, T)
+
+            # Apply masks
+            new_spec = torch.where(lr_mask, lr_spec, hr_spec)
+        else:
+            raise TypeError("cutoff_freq must be int or 1D tensor")
+
+        # ISTFT → waveform
+        target_waveform = torch.istft(new_spec, n_fft=n_fft,
+                                    hop_length=hop_length,
+                                    window=hann_window,
+                                    length=hr.shape[-1])
+
+        # Make spectrum from reconstructed waveform
+        spec = torch.stft(target_waveform, n_fft=n_fft, hop_length=hop_length,
+                        window=hann_window, return_complex=True)
         log_amp = torch.log(torch.abs(spec) + 1e-4)
         phase = torch.angle(spec)
         spectrum = {
-                'log_amp': log_amp,
-                'phase': phase
+            'log_amp': log_amp,
+            'phase': phase
         }
-        target_waveform = target_waveform[...,:-pad_len]
+
+        target_waveform = target_waveform[..., :-pad_len] if pad_len > 0 else target_waveform
         return target_waveform, spectrum
 
-    def train_step(self, hr, lr, step, pretrain_step=0):
+    def train_step(self, hr, lr, step, pretrain_step=0, bit_idx=0):
         self.generator.train()
         self.discriminator.train()
 
@@ -148,8 +204,17 @@ class Trainer:
         commit_loss = q_loss_dict.get('commit_loss', 0)
         codebook_loss = q_loss_dict.get('codebook_loss', 0)
 
-        # Generate target signal
-        hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=self.config.dataset.get('core_cutoff', 4000))
+
+        # Create per-sample cutoff tensor
+        cutoff_config = self.config.dataset.get('core_cutoff', None)
+        cutoff_table = {0: 4260, 1: 4260, 2: 4640}
+
+        if isinstance(cutoff_config, (int, float)):
+            cutoff_freq = torch.tensor([cutoff_config] * len(bit_idx), device=lr.device)
+        else:
+            cutoff_freq = torch.tensor([cutoff_table[int(i)] for i in bit_idx], device=lr.device)
+
+        hr, spectrum_r = self._generate_target_signal(lr.squeeze(1), hr.squeeze(1), cutoff_freq=cutoff_freq)
         phase_r = spectrum_r['phase']
         logamp_r = spectrum_r['log_amp']
 
@@ -237,7 +302,7 @@ class Trainer:
         }
 
         with torch.no_grad():
-            for i, (hr, lr, _) in enumerate(tqdm(self.val_loader, desc='Validation')):
+            for i, (hr, lr, _, _) in enumerate(tqdm(self.val_loader, desc='Validation')):
                 lr, hr = lr.to(self.device), hr.to(self.device)
  
                 audio_wb_g, spectrum_g, q_loss_dict = self._forward_pass(lr, hr_waveform=hr)
@@ -367,11 +432,11 @@ class Trainer:
         for epoch in range(self.start_epoch,num_epochs+1):
             train_result={}
             progress_bar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{num_epochs}')
-
-            for hr, lr, name in progress_bar:
+            
+            for hr, lr, name, bit_idx in progress_bar:
                 global_step += 1
                 hr, lr, = hr.to(self.device), lr.to(self.device)
-                step_result = self.train_step(hr, lr, step=global_step, pretrain_step=self.config['train']['pretrain_step'])
+                step_result = self.train_step(hr, lr, step=global_step, pretrain_step=self.config['train']['pretrain_step'], bit_idx=bit_idx)
 
                 # Sum up step losses for logging purposes
                 for key, value in step_result.items():

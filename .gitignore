@@ -1,5 +1,8 @@
 **__pycache__/
 debug/
+
+tsv_files/*
+
 *.png
 bash.sh
 send_data.sh
@@ -14,6 +17,9 @@ wandb/
 
 _trainer*.py
 
+
+*.png
+*.wav
 
 configs/*
 !configs/config_template.yaml

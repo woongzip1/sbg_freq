@@ -12,26 +12,25 @@ dataloader:
 
 # DATASET
 dataset:
+  core_cutoff: 4200
   ratio: 1
   common:
-    seg_len: 0.9
+    seg_len: 2
     sr: 48000
   train:
-    path_dir_nb: ["/home/woongzip/dataset_12/SBR_12_Core/VCTK",
-                  "/home/woongzip/dataset_12/SBR_12_Core/FSD50K",
-                  "/home/woongzip/dataset_12/SBR_12_Core/MUSDB18",
-    ]
-    path_dir_wb: ["/home/woongzip/dataset_12/GT/VCTK",
-                  "/home/woongzip/dataset_12/GT/FSD50K",
-                  "/home/woongzip/dataset_12/GT/MUSDB18",
-    ]
+    wb_tsv: "tsv_files/gt_path.tsv"
+    nb_tsv_list: [
+                  "tsv_files/12k_path.tsv", 
+                  "tsv_files/16k_path.tsv", 
+                  "tsv_files/20k_path.tsv"
+                  ]
   val:
-    path_dir_nb: ["/home/woongzip/dataset_12/USAC44_12_core"]
-    path_dir_wb: ["/home/woongzip/dataset_12/USAC44_GT"]
+    wb_tsv: "tsv_files/val_gt.tsv"
+    nb_tsv_list: ["tsv_files/val_12k.tsv"]
   val_speech:
-    path_dir_nb: ["/home/woongzip/Dataset/DAPS_12_core"]
-    path_dir_wb: ["/home/woongzip/Dataset/DAPS_gt_small"]
-
+    wb_tsv: "tsv_files/val_speech_gt.tsv"
+    nb_tsv_list: ["tsv_files/val_speech_12k.tsv"]
+  
 
 # GENERATOR
 generator:
@@ -39,11 +38,13 @@ generator:
   type: resnet_apbwe
   
   encoder_cfg:
+    input_ch: 2
     conv_dim: 64
-    subband_num: 26 # F:320 -> 10 bands, 512 (12kHz) -> 16 bands  
+    output_dim: 512
+    subband_num: 32 # F:320 -> 10 bands, 512 (12kHz) -> 16 bands  
     stft:
-            hop_length: 512
-            win_length: 1024
+            hop_length: 768
+            win_length: 1536
             n_fft: 2048
             center: True
 
@@ -55,13 +56,14 @@ generator:
     quantizer_dropout: 0.5
 
   decoder_cfg:
+    type: 'APNet_BWE_Model'
     ConvNeXt_channels: 512
     ConvNeXt_layers: 8
-    n_fft: 1024
+    n_fft: 1536
     stft:
-          hop_length: 512
-          win_length: 1024
-          n_fft: 1024
+          hop_length: 768
+          win_length: 1536
+          n_fft: 1536
           center: True
   
 # DISCRIMINATOR

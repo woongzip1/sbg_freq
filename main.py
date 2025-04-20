@@ -17,7 +17,9 @@ from utils import *
 ## models
 from models.prepare_models import MODEL_MAP, prepare_discriminator, prepare_generator
 ## dataset
-from dataset import Dataset, make_dataset
+# from dataset import Dataset, make_dataset
+from dataset_tsv import IndexedTSVDataset, make_dataset
+
 from trainer import Trainer
 
 ### values
